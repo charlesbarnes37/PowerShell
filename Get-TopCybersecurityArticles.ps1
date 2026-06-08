@@ -6,6 +6,7 @@ Fetches the latest cybersecurity articles from a set of RSS/Atom feeds and sends
 This script downloads feeds from a collection of cybersecurity news sites,
 selects the top articles from each site, and sends them via email with clickable hyperlinks.
 When scheduled daily, it automatically emails articles published on that specific day.
+Articles are automatically exported to a Word document on your Desktop daily.
 
 .PARAMETER Top
 The number of articles to retrieve per site. Default is 5.
@@ -40,8 +41,8 @@ Switch to create a Windows scheduled task for daily execution at a specified tim
 .PARAMETER ScheduleTime
 Time to run the scheduled task in HH:mm format (24-hour). Default is 09:00 (9 AM).
 
-.PARAMETER ExportToWord
-Switch to export articles to a Word document on the Desktop.
+.PARAMETER NoWordExport
+Switch to disable Word document export. By default, articles are exported to Word daily.
 
 .PARAMETER WordPath
 Path to save the Word document. Default is Desktop\CybersecurityArticles_<date>.docx.
@@ -59,7 +60,7 @@ param(
     [switch]$TodayOnly,
     [switch]$ScheduleDaily,
     [string]$ScheduleTime = "09:00",
-    [switch]$ExportToWord,
+    [switch]$NoWordExport,
     [string]$WordPath
 )
 
@@ -398,7 +399,8 @@ function Register-DailyScheduledTask {
         [Parameter(Mandatory)][string]$Time,
         [string]$EmailTo = "ctbarnes37@gmail.com",
         [string]$FromEmail,
-        [string]$EmailPassword
+        [string]$EmailPassword,
+        [bool]$EnableWordExport = $true
     )
 
     # Validate admin rights
@@ -410,10 +412,14 @@ function Register-DailyScheduledTask {
 
     try {
         $taskName = "CybersecurityArticlesDaily"
-        $taskDescription = "Daily cybersecurity articles digest email"
+        $taskDescription = "Daily cybersecurity articles digest with email and Word export"
         
-        # Build script arguments - always send email, filter by today
+        # Build script arguments - always send email and export to Word, filter by today
         $scriptArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -SendEmail -TodayOnly -EmailTo `"$EmailTo`""
+        
+        if (-not $EnableWordExport) {
+            $scriptArgs += " -NoWordExport"
+        }
         
         if (-not [string]::IsNullOrWhiteSpace($FromEmail) -and -not [string]::IsNullOrWhiteSpace($EmailPassword)) {
             $scriptArgs += " -FromEmail `"$FromEmail`" -EmailPassword `"$EmailPassword`""
@@ -434,7 +440,8 @@ function Register-DailyScheduledTask {
         Write-Host "   Task Name: $taskName" -ForegroundColor Green
         Write-Host "   Execution Time: $Time (Daily)" -ForegroundColor Green
         Write-Host "   Script Path: $ScriptPath" -ForegroundColor Green
-        Write-Host "   Email will be sent every day (with or without articles)" -ForegroundColor Green
+        Write-Host "   Email: Enabled" -ForegroundColor Green
+        Write-Host "   Word Export: $(if ($EnableWordExport) { 'Enabled' } else { 'Disabled' })" -ForegroundColor Green
     }
     catch {
         Write-Host "❌ Failed to create scheduled task: $($_.Exception.Message)" -ForegroundColor Red
@@ -449,7 +456,7 @@ if ($ScheduleDaily) {
         exit
     }
     Register-DailyScheduledTask -ScriptPath $scriptPath -Time $ScheduleTime -EmailTo $EmailTo `
-        -FromEmail $FromEmail -EmailPassword $EmailPassword
+        -FromEmail $FromEmail -EmailPassword $EmailPassword -EnableWordExport (-not $NoWordExport)
     exit
 }
 
@@ -501,8 +508,8 @@ if ($allArticles.Count -eq 0) {
             -SMTPServer $SMTPServer -SMTPPort $SMTPPort -SuccessfulFeeds 0 -TotalFeeds $CyberFeeds.Count `
             -EmailDate $emailDate
     }
-    # Export to Word if requested
-    if ($ExportToWord) {
+    # Export to Word (enabled by default unless disabled)
+    if (-not $NoWordExport) {
         $docPath = if ([string]::IsNullOrWhiteSpace($WordPath)) {
             "$([Environment]::GetFolderPath('Desktop'))\CybersecurityArticles_$(Get-Date -Format 'yyyy-MM-dd').docx"
         } else {
@@ -579,7 +586,8 @@ if ($SendEmail) {
     }
 }
 
-if ($ExportToWord) {
+# Export to Word (enabled by default unless disabled)
+if (-not $NoWordExport) {
     $docPath = if ([string]::IsNullOrWhiteSpace($WordPath)) {
         "$([Environment]::GetFolderPath('Desktop'))\CybersecurityArticles_$(Get-Date -Format 'yyyy-MM-dd').docx"
     } else {
