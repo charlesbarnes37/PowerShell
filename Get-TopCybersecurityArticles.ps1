@@ -39,6 +39,12 @@ Switch to create a Windows scheduled task for daily execution at a specified tim
 
 .PARAMETER ScheduleTime
 Time to run the scheduled task in HH:mm format (24-hour). Default is 09:00 (9 AM).
+
+.PARAMETER ExportToWord
+Switch to export articles to a Word document on the Desktop.
+
+.PARAMETER WordPath
+Path to save the Word document. Default is Desktop\CybersecurityArticles_<date>.docx.
 #>
 
 param(
@@ -52,7 +58,9 @@ param(
     [string]$EmailPassword,
     [switch]$TodayOnly,
     [switch]$ScheduleDaily,
-    [string]$ScheduleTime = "09:00"
+    [string]$ScheduleTime = "09:00",
+    [switch]$ExportToWord,
+    [string]$WordPath
 )
 
 $CyberFeeds = [ordered]@{
@@ -290,6 +298,100 @@ function Send-ArticlesEmail {
     }
 }
 
+function Export-ArticlesToWord {
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.List[PSObject]]$Articles,
+        [Parameter(Mandatory)][string]$Path,
+        [int]$SuccessfulFeeds,
+        [int]$TotalFeeds
+    )
+
+    try {
+        # Create Word application object
+        $Word = New-Object -ComObject Word.Application
+        $Word.Visible = $false
+        $Document = $Word.Documents.Add()
+
+        # Add title
+        $title = $Document.Range().InsertBefore("Cybersecurity Articles Digest`n`n")
+        $title.Font.Size = 24
+        $title.Font.Bold = $true
+        $title.Font.Color = 0x2C3E50
+
+        # Add summary
+        $summary = $Document.Range().InsertAfter("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n")
+        $summary.Font.Size = 11
+        $summary.Font.Italic = $true
+        $summary.Font.Color = 0x7F8C8D
+
+        $summaryText = $Document.Range().InsertAfter("Summary: $($Articles.Count) articles from $SuccessfulFeeds/$TotalFeeds feeds`n`n")
+        $summaryText.Font.Size = 11
+        $summaryText.Font.Color = 0x555555
+
+        # Add articles
+        if ($Articles.Count -eq 0) {
+            $noArticles = $Document.Range().InsertAfter("No articles were retrieved.")
+            $noArticles.Font.Size = 11
+            $noArticles.Font.Italic = $true
+        } else {
+            foreach ($article in $Articles) {
+                # Site name
+                $siteRange = $Document.Range().InsertAfter("[$($article.Site)]`n")
+                $siteRange.Font.Bold = $true
+                $siteRange.Font.Size = 12
+                $siteRange.Font.Color = 0x3498DB
+
+                # Title
+                $titleRange = $Document.Range().InsertAfter("$($article.Title)`n")
+                $titleRange.Font.Bold = $true
+                $titleRange.Font.Size = 14
+                $titleRange.Font.Color = 0x2C3E50
+
+                # Date
+                $pubDateStr = if ($article.PubDate) { $article.PubDate.ToString('yyyy-MM-dd HH:mm') } else { 'N/A' }
+                $dateRange = $Document.Range().InsertAfter("Date: $pubDateStr`n")
+                $dateRange.Font.Size = 10
+                $dateRange.Font.Italic = $true
+                $dateRange.Font.Color = 0x7F8C8D
+
+                # Link
+                if (-not [string]::IsNullOrWhiteSpace($article.Link)) {
+                    $linkRange = $Document.Range().InsertAfter("Link: $($article.Link)`n")
+                    $linkRange.Font.Size = 10
+                    $linkRange.Font.Color = 0x0563C1
+                    $linkRange.Hyperlinks.Add($linkRange, $article.Link) | Out-Null
+                }
+
+                # Description
+                if (-not [string]::IsNullOrEmpty($article.Description)) {
+                    $shortDesc = if ($article.Description.Length -gt 300) {
+                        $article.Description.Substring(0, 297) + '...'
+                    } else {
+                        $article.Description
+                    }
+                    $descRange = $Document.Range().InsertAfter("$shortDesc`n")
+                    $descRange.Font.Size = 11
+                    $descRange.Font.Color = 0x555555
+                }
+
+                # Separator
+                $Document.Range().InsertAfter("`n" + ("-" * 80) + "`n`n")
+            }
+        }
+
+        # Save document
+        $Document.SaveAs([ref]$Path, [ref]16) # 16 = Word 2007-2019 format (.docx)
+        $Word.Quit()
+
+        Write-Host "`n💾 Word document created successfully!" -ForegroundColor Green
+        Write-Host "   File: $Path" -ForegroundColor Green
+        Write-Host "   Articles included: $($Articles.Count)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "`n❌ Failed to export to Word: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
 function Register-DailyScheduledTask {
     param(
         [Parameter(Mandatory)][string]$ScriptPath,
@@ -399,6 +501,16 @@ if ($allArticles.Count -eq 0) {
             -SMTPServer $SMTPServer -SMTPPort $SMTPPort -SuccessfulFeeds 0 -TotalFeeds $CyberFeeds.Count `
             -EmailDate $emailDate
     }
+    # Export to Word if requested
+    if ($ExportToWord) {
+        $docPath = if ([string]::IsNullOrWhiteSpace($WordPath)) {
+            "$([Environment]::GetFolderPath('Desktop'))\CybersecurityArticles_$(Get-Date -Format 'yyyy-MM-dd').docx"
+        } else {
+            $WordPath
+        }
+        $emptyList = [System.Collections.Generic.List[PSObject]]::new()
+        Export-ArticlesToWord -Articles $emptyList -Path $docPath -SuccessfulFeeds 0 -TotalFeeds $CyberFeeds.Count
+    }
     return
 }
 
@@ -465,6 +577,15 @@ if ($SendEmail) {
             -SMTPServer $SMTPServer -SMTPPort $SMTPPort -SuccessfulFeeds $successfulFeeds -TotalFeeds $CyberFeeds.Count `
             -EmailDate $emailDate
     }
+}
+
+if ($ExportToWord) {
+    $docPath = if ([string]::IsNullOrWhiteSpace($WordPath)) {
+        "$([Environment]::GetFolderPath('Desktop'))\CybersecurityArticles_$(Get-Date -Format 'yyyy-MM-dd').docx"
+    } else {
+        $WordPath
+    }
+    Export-ArticlesToWord -Articles $allArticles -Path $docPath -SuccessfulFeeds $successfulFeeds -TotalFeeds $CyberFeeds.Count
 }
 
 Write-Host "`nSummary: $($allArticles.Count) articles from $successfulFeeds/$($CyberFeeds.Count) successful feeds." -ForegroundColor Cyan
