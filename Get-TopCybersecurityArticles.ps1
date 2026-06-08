@@ -36,7 +36,7 @@ Sender email address. Required when SendEmail is used.
 Sender email password or app password. Required when SendEmail is used.
 
 .PARAMETER TodayOnly
-Switch to filter and send only articles published today. Useful for daily scheduled tasks.
+Switch to filter articles to only those published today. Email is sent daily regardless of article count.
 
 .PARAMETER ScheduleDaily
 Switch to create a Windows scheduled task for daily execution at a specified time.
@@ -207,7 +207,7 @@ function Send-ArticlesEmail {
                 .link { color: #3498db; text-decoration: none; }
                 .link:hover { text-decoration: underline; }
                 .footer { padding: 20px; background-color: #ecf0f1; text-align: center; font-size: 12px; color: #7f8c8d; }
-                .no-articles { padding: 20px; text-align: center; color: #7f8c8d; }
+                .no-articles { padding: 20px; text-align: center; color: #7f8c8d; background-color: #f9f9f9; }
             </style>
         </head>
         <body>
@@ -217,7 +217,7 @@ function Send-ArticlesEmail {
             </div>
             
             <div class="summary">
-                <p><strong>Summary:</strong> $($Articles.Count) articles retrieved from $SuccessfulFeeds/$TotalFeeds feeds</p>
+                <p><strong>Summary:</strong> $($Articles.Count) articles from $SuccessfulFeeds/$TotalFeeds feeds</p>
                 <p><strong>Generated:</strong> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</p>
             </div>
 "@
@@ -225,7 +225,8 @@ function Send-ArticlesEmail {
         if ($Articles.Count -eq 0) {
             $htmlBody += @"
             <div class="no-articles">
-                <p>No articles were published on $dateDisplay.</p>
+                <p>📰 No new articles were published on $dateDisplay.</p>
+                <p>Check back tomorrow for updates!</p>
             </div>
 "@
         } else {
@@ -314,7 +315,7 @@ function Register-DailyScheduledTask {
         $taskName = "CybersecurityArticlesDaily"
         $taskDescription = "Daily cybersecurity articles digest email"
         
-        # Build script arguments
+        # Build script arguments - always send email, filter by today
         $scriptArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -SendEmail -TodayOnly -EmailTo `"$EmailTo`""
         
         if (-not [string]::IsNullOrWhiteSpace($FromEmail) -and -not [string]::IsNullOrWhiteSpace($EmailPassword)) {
@@ -336,6 +337,7 @@ function Register-DailyScheduledTask {
         Write-Host "   Task Name: $taskName" -ForegroundColor Green
         Write-Host "   Execution Time: $Time (Daily)" -ForegroundColor Green
         Write-Host "   Script Path: $ScriptPath" -ForegroundColor Green
+        Write-Host "   Email will be sent every day (with or without articles)" -ForegroundColor Green
     }
     catch {
         Write-Host "❌ Failed to create scheduled task: $($_.Exception.Message)" -ForegroundColor Red
@@ -394,6 +396,14 @@ foreach ($site in $CyberFeeds.GetEnumerator()) {
 
 if ($allArticles.Count -eq 0) {
     Write-Host "No articles were retrieved. Check your network connection or feed URLs." -ForegroundColor Yellow
+    # Still send email if requested, even if all articles failed to load
+    if ($SendEmail -and -not [string]::IsNullOrWhiteSpace($FromEmail) -and -not [string]::IsNullOrWhiteSpace($EmailPassword)) {
+        $emptyList = [System.Collections.Generic.List[PSObject]]::new()
+        $emailDate = if ($TodayOnly) { (Get-Date).ToString('yyyy-MM-dd') } else { $null }
+        Send-ArticlesEmail -Articles $emptyList -To $EmailTo -From $FromEmail -Password $EmailPassword `
+            -SMTPServer $SMTPServer -SMTPPort $SMTPPort -SuccessfulFeeds 0 -TotalFeeds $CyberFeeds.Count `
+            -EmailDate $emailDate
+    }
     return
 }
 
@@ -405,36 +415,35 @@ if ($TodayOnly) {
     $allArticles = $allArticles | Where-Object { 
         $null -ne $_.PubDate -and $_.PubDate.Date -eq $todayDate 
     }
-    
-    if ($allArticles.Count -eq 0) {
-        Write-Host "ℹ️  No articles published today." -ForegroundColor Yellow
-        Write-Host "Email not sent (no today's articles)." -ForegroundColor Yellow
-        return
-    }
+    Write-Host "ℹ️  Filtered to articles published today: $($allArticles.Count) articles found." -ForegroundColor Cyan
 }
 
 Write-Host "`n🚀 Top Cybersecurity Articles" -ForegroundColor Green
 Write-Host "====================================`n" -ForegroundColor Green
 
-foreach ($article in $allArticles) {
-    Write-Host "[$($article.Site)]" -ForegroundColor Cyan
-    Write-Host "Title: $($article.Title)" -ForegroundColor White
-    Write-Host "Link : $($article.Link)" -ForegroundColor Yellow
+if ($allArticles.Count -gt 0) {
+    foreach ($article in $allArticles) {
+        Write-Host "[$($article.Site)]" -ForegroundColor Cyan
+        Write-Host "Title: $($article.Title)" -ForegroundColor White
+        Write-Host "Link : $($article.Link)" -ForegroundColor Yellow
 
-    if ($article.PubDate) {
-        Write-Host "Date : $($article.PubDate.ToString('yyyy-MM-dd HH:mm'))" -ForegroundColor Gray
-    }
-
-    if (-not [string]::IsNullOrEmpty($article.Description)) {
-        $shortDesc = if ($article.Description.Length -gt 150) {
-            $article.Description.Substring(0, 147) + '...'
-        } else {
-            $article.Description
+        if ($article.PubDate) {
+            Write-Host "Date : $($article.PubDate.ToString('yyyy-MM-dd HH:mm'))" -ForegroundColor Gray
         }
-        Write-Host "Desc : $shortDesc" -ForegroundColor Gray
-    }
 
-    Write-Host ('-' * 80) -ForegroundColor DarkGray
+        if (-not [string]::IsNullOrEmpty($article.Description)) {
+            $shortDesc = if ($article.Description.Length -gt 150) {
+                $article.Description.Substring(0, 147) + '...'
+            } else {
+                $article.Description
+            }
+            Write-Host "Desc : $shortDesc" -ForegroundColor Gray
+        }
+
+        Write-Host ('-' * 80) -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "No articles to display." -ForegroundColor Yellow
 }
 
 if ($OpenInBrowser) {
