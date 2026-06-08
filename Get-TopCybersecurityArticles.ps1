@@ -146,7 +146,7 @@ $successfulFeeds = 0
 foreach ($site in $CyberFeeds.GetEnumerator()) {
     try {
         Write-Host "   → Fetching from $($site.Key)..." -ForegroundColor Gray
-        $response = Invoke-WebRequest -Uri $site.Value -TimeoutSec 20
+        $response = Invoke-WebRequest -Uri $site.Value -TimeoutSec 20 -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         [xml]$xml = $response.Content
 
         $items = Get-FeedItems -Xml $xml | Select-Object -First $Top
@@ -180,7 +180,7 @@ if ($allArticles.Count -eq 0) {
     return
 }
 
-$allArticles = $allArticles | Sort-Object PubDate -Descending
+$allArticles = $allArticles | Sort-Object @{Expression = {$_.PubDate -as [DateTime]}; Descending = $true}
 
 Write-Host "`n🚀 Top Cybersecurity Articles" -ForegroundColor Green
 Write-Host "====================================`n" -ForegroundColor Green
@@ -194,7 +194,7 @@ foreach ($article in $allArticles) {
         Write-Host "Date : $($article.PubDate.ToString('yyyy-MM-dd HH:mm'))" -ForegroundColor Gray
     }
 
-    if ($article.Description) {
+    if (-not [string]::IsNullOrEmpty($article.Description)) {
         $shortDesc = if ($article.Description.Length -gt 150) {
             $article.Description.Substring(0, 147) + '...'
         } else {
@@ -211,7 +211,7 @@ if ($OpenInBrowser) {
     foreach ($article in $allArticles) {
         if (-not [string]::IsNullOrWhiteSpace($article.Link)) {
             try {
-                Start-Process -FilePath $article.Link
+                Start-Process -Uri $article.Link
                 Start-Sleep -Milliseconds 750
             }
             catch {
