@@ -5,7 +5,8 @@ Fetches the latest cybersecurity articles from a set of RSS/Atom feeds.
 .DESCRIPTION
 This script downloads feeds from a collection of cybersecurity news sites,
 selects the top articles from each site, and optionally opens them in the browser,
-exports the results to CSV, or sends them via email.
+exports the results to CSV, or sends them via email. When scheduled daily, it can
+automatically email only articles published on that specific day.
 
 .PARAMETER Top
 The number of articles to retrieve per site. Default is 5.
@@ -33,6 +34,15 @@ Sender email address. Required when SendEmail is used.
 
 .PARAMETER EmailPassword
 Sender email password or app password. Required when SendEmail is used.
+
+.PARAMETER TodayOnly
+Switch to filter and send only articles published today. Useful for daily scheduled tasks.
+
+.PARAMETER ScheduleDaily
+Switch to create a Windows scheduled task for daily execution at a specified time.
+
+.PARAMETER ScheduleTime
+Time to run the scheduled task in HH:mm format (24-hour). Default is 09:00 (9 AM).
 #>
 
 param(
@@ -44,7 +54,10 @@ param(
     [string]$SMTPServer = "smtp.gmail.com",
     [int]$SMTPPort = 587,
     [string]$FromEmail,
-    [string]$EmailPassword
+    [string]$EmailPassword,
+    [switch]$TodayOnly,
+    [switch]$ScheduleDaily,
+    [string]$ScheduleTime = "09:00"
 )
 
 $CyberFeeds = [ordered]@{
@@ -170,10 +183,13 @@ function Send-ArticlesEmail {
         [Parameter(Mandatory)][string]$SMTPServer,
         [Parameter(Mandatory)][int]$SMTPPort,
         [int]$SuccessfulFeeds,
-        [int]$TotalFeeds
+        [int]$TotalFeeds,
+        [string]$EmailDate = $null
     )
 
     try {
+        $dateDisplay = if ($EmailDate) { $EmailDate } else { Get-Date -Format 'yyyy-MM-dd' }
+        
         # Build HTML email body
         $htmlBody = @"
         <!DOCTYPE html>
@@ -191,11 +207,12 @@ function Send-ArticlesEmail {
                 .link { color: #3498db; text-decoration: none; }
                 .link:hover { text-decoration: underline; }
                 .footer { padding: 20px; background-color: #ecf0f1; text-align: center; font-size: 12px; color: #7f8c8d; }
+                .no-articles { padding: 20px; text-align: center; color: #7f8c8d; }
             </style>
         </head>
         <body>
             <div class="header">
-                <h1>🔍 Top Cybersecurity Articles</h1>
+                <h1>🔍 Cybersecurity Articles for $dateDisplay</h1>
                 <p>Latest articles from $TotalFeeds cybersecurity news sources</p>
             </div>
             
@@ -205,33 +222,41 @@ function Send-ArticlesEmail {
             </div>
 "@
 
-        foreach ($article in $Articles) {
-            $pubDateStr = if ($article.PubDate) { $article.PubDate.ToString('yyyy-MM-dd HH:mm') } else { 'N/A' }
+        if ($Articles.Count -eq 0) {
             $htmlBody += @"
-            <div class="article">
-                <div class="site">[$($article.Site)]</div>
-                <div class="title">$([System.Web.HttpUtility]::HtmlEncode($article.Title))</div>
-                <div class="date">📅 $pubDateStr</div>
+            <div class="no-articles">
+                <p>No articles were published on $dateDisplay.</p>
+            </div>
 "@
-            
-            if (-not [string]::IsNullOrEmpty($article.Description)) {
-                $shortDesc = if ($article.Description.Length -gt 200) {
-                    $article.Description.Substring(0, 197) + '...'
-                } else {
-                    $article.Description
+        } else {
+            foreach ($article in $Articles) {
+                $pubDateStr = if ($article.PubDate) { $article.PubDate.ToString('yyyy-MM-dd HH:mm') } else { 'N/A' }
+                $htmlBody += @"
+                <div class="article">
+                    <div class="site">[$($article.Site)]</div>
+                    <div class="title">$([System.Web.HttpUtility]::HtmlEncode($article.Title))</div>
+                    <div class="date">📅 $pubDateStr</div>
+"@
+                
+                if (-not [string]::IsNullOrEmpty($article.Description)) {
+                    $shortDesc = if ($article.Description.Length -gt 200) {
+                        $article.Description.Substring(0, 197) + '...'
+                    } else {
+                        $article.Description
+                    }
+                    $htmlBody += @"
+                    <div class="description">$([System.Web.HttpUtility]::HtmlEncode($shortDesc))</div>
+"@
                 }
-                $htmlBody += @"
-                <div class="description">$([System.Web.HttpUtility]::HtmlEncode($shortDesc))</div>
-"@
-            }
 
-            if (-not [string]::IsNullOrWhiteSpace($article.Link)) {
-                $htmlBody += @"
-                <p><a class="link" href="$($article.Link)" target="_blank">🔗 Read Full Article</a></p>
+                if (-not [string]::IsNullOrWhiteSpace($article.Link)) {
+                    $htmlBody += @"
+                    <p><a class="link" href="$($article.Link)" target="_blank">🔗 Read Full Article</a></p>
 "@
-            }
+                }
 
-            $htmlBody += "</div>`n"
+                $htmlBody += "</div>`n"
+            }
         }
 
         $htmlBody += @"
@@ -250,7 +275,7 @@ function Send-ArticlesEmail {
         $emailParams = @{
             To              = $To
             From            = $From
-            Subject         = "🔐 Top Cybersecurity Articles - $(Get-Date -Format 'yyyy-MM-dd')"
+            Subject         = "🔐 Cybersecurity Articles - $dateDisplay"
             Body            = $htmlBody
             BodyAsHtml      = $true
             SmtpServer      = $SMTPServer
@@ -262,10 +287,71 @@ function Send-ArticlesEmail {
 
         Send-MailMessage @emailParams
         Write-Host "`n📧 Email sent successfully to: $To" -ForegroundColor Green
+        Write-Host "   Articles included: $($Articles.Count)" -ForegroundColor Green
     }
     catch {
         Write-Host "`n❌ Failed to send email: $($_.Exception.Message)" -ForegroundColor Red
     }
+}
+
+function Register-DailyScheduledTask {
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [Parameter(Mandatory)][string]$Time,
+        [string]$EmailTo = "ctbarnes37@gmail.com",
+        [string]$FromEmail,
+        [string]$EmailPassword
+    )
+
+    # Validate admin rights
+    $isAdmin = [bool]([System.Security.Principal.WindowsIdentity]::GetCurrent().Groups -match 'S-1-5-32-544')
+    if (-not $isAdmin) {
+        Write-Host "❌ Scheduled task registration requires administrator privileges" -ForegroundColor Red
+        return
+    }
+
+    try {
+        $taskName = "CybersecurityArticlesDaily"
+        $taskDescription = "Daily cybersecurity articles digest email"
+        
+        # Build script arguments
+        $scriptArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -SendEmail -TodayOnly -EmailTo `"$EmailTo`""
+        
+        if (-not [string]::IsNullOrWhiteSpace($FromEmail) -and -not [string]::IsNullOrWhiteSpace($EmailPassword)) {
+            $scriptArgs += " -FromEmail `"$FromEmail`" -EmailPassword `"$EmailPassword`""
+        }
+
+        # Create scheduled task action
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $scriptArgs
+        
+        # Create trigger for daily execution
+        [datetime]$dailyTime = $Time
+        $trigger = New-ScheduledTaskTrigger -Daily -At $dailyTime
+        
+        # Register the task
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+            -Description $taskDescription -Force | Out-Null
+
+        Write-Host "✅ Scheduled task created successfully!" -ForegroundColor Green
+        Write-Host "   Task Name: $taskName" -ForegroundColor Green
+        Write-Host "   Execution Time: $Time (Daily)" -ForegroundColor Green
+        Write-Host "   Script Path: $ScriptPath" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "❌ Failed to create scheduled task: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Handle scheduled task creation
+if ($ScheduleDaily) {
+    $scriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($FromEmail) -or [string]::IsNullOrWhiteSpace($EmailPassword)) {
+        Write-Host "❌ ScheduleDaily requires -FromEmail and -EmailPassword parameters" -ForegroundColor Red
+        exit
+    }
+    Register-DailyScheduledTask -ScriptPath $scriptPath -Time $ScheduleTime -EmailTo $EmailTo `
+        -FromEmail $FromEmail -EmailPassword $EmailPassword
+    exit
 }
 
 Write-Host "🔍 Fetching top cybersecurity articles from $($CyberFeeds.Count) feeds..." -ForegroundColor Cyan
@@ -313,6 +399,20 @@ if ($allArticles.Count -eq 0) {
 
 $allArticles = $allArticles | Sort-Object @{Expression = {$_.PubDate -as [DateTime]}; Descending = $true}
 
+# Filter articles by today if TodayOnly is specified
+$todayDate = (Get-Date).Date
+if ($TodayOnly) {
+    $allArticles = $allArticles | Where-Object { 
+        $null -ne $_.PubDate -and $_.PubDate.Date -eq $todayDate 
+    }
+    
+    if ($allArticles.Count -eq 0) {
+        Write-Host "ℹ️  No articles published today." -ForegroundColor Yellow
+        Write-Host "Email not sent (no today's articles)." -ForegroundColor Yellow
+        return
+    }
+}
+
 Write-Host "`n🚀 Top Cybersecurity Articles" -ForegroundColor Green
 Write-Host "====================================`n" -ForegroundColor Green
 
@@ -356,8 +456,10 @@ if ($SendEmail) {
     if ([string]::IsNullOrWhiteSpace($FromEmail) -or [string]::IsNullOrWhiteSpace($EmailPassword)) {
         Write-Host "`n❌ SendEmail requires -FromEmail and -EmailPassword parameters" -ForegroundColor Red
     } else {
+        $emailDate = if ($TodayOnly) { (Get-Date).ToString('yyyy-MM-dd') } else { $null }
         Send-ArticlesEmail -Articles $allArticles -To $EmailTo -From $FromEmail -Password $EmailPassword `
-            -SMTPServer $SMTPServer -SMTPPort $SMTPPort -SuccessfulFeeds $successfulFeeds -TotalFeeds $CyberFeeds.Count
+            -SMTPServer $SMTPServer -SMTPPort $SMTPPort -SuccessfulFeeds $successfulFeeds -TotalFeeds $CyberFeeds.Count `
+            -EmailDate $emailDate
     }
 }
 
