@@ -1,21 +1,17 @@
 <#
 .SYNOPSIS
-Fetches the latest cybersecurity articles from a set of RSS/Atom feeds.
+Fetches the latest cybersecurity articles from a set of RSS/Atom feeds and sends them via email.
 
 .DESCRIPTION
 This script downloads feeds from a collection of cybersecurity news sites,
-selects the top articles from each site, and optionally opens them in the browser,
-exports the results to CSV, or sends them via email. When scheduled daily, it can
-automatically email only articles published on that specific day.
+selects the top articles from each site, and sends them via email with clickable hyperlinks.
+When scheduled daily, it automatically emails articles published on that specific day.
 
 .PARAMETER Top
 The number of articles to retrieve per site. Default is 5.
 
 .PARAMETER OpenInBrowser
 Switch to open each article in the default browser after fetching.
-
-.PARAMETER ExportPath
-Optional path to export the results as CSV. Defaults to a file on the desktop.
 
 .PARAMETER SendEmail
 Switch to send the articles via email.
@@ -48,7 +44,6 @@ Time to run the scheduled task in HH:mm format (24-hour). Default is 09:00 (9 AM
 param(
     [int]$Top = 5,
     [switch]$OpenInBrowser,
-    [string]$ExportPath = "$HOME\Desktop\CyberNews_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv",
     [switch]$SendEmail,
     [string]$EmailTo = "ctbarnes37@gmail.com",
     [string]$SMTPServer = "smtp.gmail.com",
@@ -204,7 +199,7 @@ function Send-ArticlesEmail {
                 .title { color: #2c3e50; font-weight: bold; font-size: 16px; margin: 10px 0; }
                 .date { color: #7f8c8d; font-size: 12px; }
                 .description { color: #555; line-height: 1.6; margin: 10px 0; }
-                .link { color: #3498db; text-decoration: none; }
+                .link { color: #3498db; text-decoration: none; font-weight: bold; }
                 .link:hover { text-decoration: underline; }
                 .footer { padding: 20px; background-color: #ecf0f1; text-align: center; font-size: 12px; color: #7f8c8d; }
                 .no-articles { padding: 20px; text-align: center; color: #7f8c8d; background-color: #f9f9f9; }
@@ -470,19 +465,6 @@ if ($SendEmail) {
             -SMTPServer $SMTPServer -SMTPPort $SMTPPort -SuccessfulFeeds $successfulFeeds -TotalFeeds $CyberFeeds.Count `
             -EmailDate $emailDate
     }
-}
-
-try {
-    $exportDirectory = Split-Path -Parent $ExportPath
-    if (-not (Test-Path -Path $exportDirectory)) {
-        New-Item -ItemType Directory -Path $exportDirectory -Force | Out-Null
-    }
-
-    $allArticles | Export-Csv -Path $ExportPath -NoTypeInformation
-    Write-Host "`n💾 Results exported to: $ExportPath" -ForegroundColor Green
-}
-catch {
-    Write-Host "`n⚠️  Unable to export CSV: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 Write-Host "`nSummary: $($allArticles.Count) articles from $successfulFeeds/$($CyberFeeds.Count) successful feeds." -ForegroundColor Cyan
