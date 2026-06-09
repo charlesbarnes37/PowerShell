@@ -1,0 +1,229 @@
+# =========================
+# CONFIG SETUP (FIRST RUN)
+# =========================
+$configPath = "$env:USERPROFILE\cyberDigestConfig.xml"
+
+if (!(Test-Path $configPath)) {
+    Write-Host "🔧 First-time setup..."
+
+    $fromEmail = Read-Host "Enter FROM email (Outlook account)"
+    $toEmails  = Read-Host "Enter TO emails (comma separated)"
+
+    $config = @{
+        From = $fromEmail
+        To   = $toEmails -split "," | ForEach-Object { $_.Trim() }
+    }
+
+    $config | Export-Clixml $configPath
+    Write-Host "✅ Config saved."
+}
+
+$config = Import-Clixml $configPath
+
+# =========================
+# PATHS
+# =========================
+$BasePath = "C:\TechNewsDaily"
+
+New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
+
+$Date = Get-Date -Format "yyyy-MM-dd"
+$OutputFile = "$BasePath\CyberDigest_$Date.html"
+$LogFile = "$BasePath\CyberDigest.log"
+
+# =========================
+# FEEDS
+# =========================
+$Feeds = @(
+    "https://krebsonsecurity.com/feed/",
+    "https://www.darkreading.com/rss.xml",
+    "https://www.cyberscoop.com/feed/",
+    "https://www.bleepingcomputer.com/feed/",
+    "https://www.securityweek.com/feed",
+    "https://thehackernews.com/rss.xml",
+    "https://www.zdnet.com/topic/security/rss.xml"
+)
+
+# =========================
+# SUMMARY FUNCTION
+# =========================
+function Get-Summary {
+    param($Text)
+
+    if (-not $Text) { return "" }
+
+    $clean = ($Text -replace '<[^>]+>', '') -replace '\s+', ' '
+    $clean = $clean.Trim()
+
+    $sentences = $clean -split '(?<=[\.!\?])\s+'
+
+    if ($sentences.Count -gt 2) {
+        $summary = ($sentences[0..1] -join ' ')
+    } else {
+        $summary = $clean
+    }
+
+    if ($summary.Length -gt 400) {
+        $summary = $summary.Substring(0,400) + "..."
+    }
+
+    return $summary
+}
+
+# =========================
+# START HTML
+# =========================
+$html = @"
+<html>
+<head>
+<style>
+body { font-family: Arial; margin:20px; line-height:1.6; }
+h1 { color:#2b5797; }
+h2 { margin-top:25px; }
+.article { margin-bottom:20px; border-bottom:1px solid #ccc; padding-bottom:10px; }
+.title { font-weight:bold; font-size:16px; }
+a { color:#1a0dab; text-decoration:none; }
+a:hover { text-decoration:underline; }
+.summary { color:#555; font-style:italic; }
+</style>
+</head>
+<body>
+<h1>🔐 Daily Cybersecurity Digest — $Date</h1>
+"@
+
+# =========================
+# FETCH DATA
+# =========================
+$Seen = @{}
+
+foreach ($Feed in $Feeds) {
+    try {
+        $response = Invoke-WebRequest -Uri $Feed -Headers @{
+            "User-Agent"="Mozilla/5.0"
+        } -UseBasicParsing
+
+        $raw = $response.Content.Trim()
+
+        $html += "<h2>Source: $Feed</h2>"
+
+        if ($raw.StartsWith("<?xml") -or $raw.Contains("<rss")) {
+            $xml = [xml]$raw
+            $items = $xml.rss.channel.item
+        }
+        elseif ($raw.Contains("<feed")) {
+            $xml = [xml]$raw
+            $items = $xml.feed.entry
+        }
+        elseif ($raw.StartsWith("{") -or $raw.StartsWith("[")) {
+            $json = $raw | ConvertFrom-Json
+            $items = $json.items
+        }
+        else {
+            throw "Unknown feed format"
+        }
+
+        foreach ($item in $items | Select-Object -First 10) {
+
+            if (-not $item.title) { continue }
+            $title = ($item.title -replace '<[^>]+>', '')
+
+            # ✅ ROBUST LINK HANDLING
+            if ($item.link.href) {
+                $link = $item.link.href
+            }
+            elseif ($item.link.'#text') {
+                $link = $item.link.'#text'
+            }
+            elseif ($item.link) {
+                $link = $item.link
+            }
+            elseif ($item.url) {
+                $link = $item.url
+            }
+            else {
+                $link = $Feed
+            }
+
+            # ✅ CLEAN DESCRIPTION
+            if ($item.summary) { $desc = $item.summary }
+            elseif ($item.description) { $desc = $item.description }
+            elseif ($item.content) { $desc = $item.content }
+            else { $desc = "" }
+
+            # ✅ DEDUPE
+            $key = "$title|$link".ToLower()
+            if ($Seen.ContainsKey($key)) { continue }
+            $Seen[$key] = $true
+
+            $summary = Get-Summary $desc
+
+            # ✅ ✅ ✅ FIXED CLICKABLE HTML
+            $html += @"
+<div class='article'>
+  <div class='title'><a href='$link' target='_blank'>$title</a></div>
+  <div class='summary'>$summary</div>
+</div>
+"@
+        }
+    }
+    catch {
+        Add-Content $LogFile "$(Get-Date) - Failed $Feed - $($_.Exception.Message)"
+    }
+}
+
+$html += "</body></html>"
+
+# =========================
+# SAVE FILE (SAFE)
+# =========================
+[System.IO.File]::WriteAllText($OutputFile, $html)
+Unblock-File -Path $OutputFile -ErrorAction SilentlyContinue
+
+Add-Content $LogFile "$(Get-Date) - Created $OutputFile"
+Write-Host "✅ Saved: $OutputFile"
+
+Start-Process $OutputFile
+
+# =========================
+# SEND EMAIL (OUTLOOK)
+# =========================
+try {
+    $outlook = New-Object -ComObject Outlook.Application
+    $namespace = $outlook.GetNamespace("MAPI")
+
+    # ✅ Prompt user for email addresses
+    $fromEmail = Read-Host "Enter FROM email (must exist in Outlook)"
+    $toEmail   = Read-Host "Enter TO email"
+
+    $mail = $outlook.CreateItem(0)
+
+    # ✅ Set recipient
+    $mail.To = $toEmail
+
+    # ✅ Find matching Outlook account
+    $sendAccount = $outlook.Session.Accounts | Where-Object {
+        $_.SmtpAddress -eq $fromEmail
+    }
+
+    if ($sendAccount) {
+        $mail.SendUsingAccount = $sendAccount
+        Write-Host "✅ Using account: $fromEmail"
+    }
+    else {
+        Write-Host "⚠️ FROM address not found in Outlook. Using default account."
+    }
+
+    $mail.Subject = "CyberSecurity Digest"
+    $mail.Body = "Attached is your daily digest."
+
+    # ✅ Attach file
+    $mail.Attachments.Add($OutputFile) | Out-Null
+
+    # ✅ Send email
+    $mail.Send()
+
+    Add-Content -Path $LogFile -Value "$(Get-Date) - Email sent from $fromEmail to $toEmail"
+}
+catch {
+    Add-Content -Path $LogFile -Value "$(Get-Date) - Email FAILED - $($_.Exception.Message)"
+}
