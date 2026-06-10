@@ -1,36 +1,36 @@
 # =========================
-# BASE PATH (ALL FILES HERE)
+# BASE PATH
 # =========================
 $BasePath = "C:\TechNewsDaily"
 $Date = Get-Date -Format "yyyy-MM-dd"
-
-# Ensure directory exists
-New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
-
-# Files
 $OutputFile = "$BasePath\CyberDigest_$Date.html"
 $configPath = "$BasePath\cyberDigestConfig.xml"
 $LogFile = "$BasePath\CyberDigest.log"
 
+# Ensure directory exists
+New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
+
 # =========================
-# CONFIG (FIRST RUN ONLY)
+# LOG FUNCTION
+# =========================
+function Write-Log {
+    param ($msg)
+    Add-Content -Path $LogFile -Value "$(Get-Date) - $msg"
+}
+
+Write-Log "===== Script started ====="
+
+# =========================
+# LOAD CONFIG
 # =========================
 if (!(Test-Path $configPath)) {
-    Write-Host "🔧 First-time setup..."
-
-    $fromEmail = Read-Host "Enter FROM email (Outlook account)"
-    $toEmails  = Read-Host "Enter TO emails (comma separated)"
-
-    $config = @{
-        From = $fromEmail
-        To   = $toEmails -split "," | ForEach-Object { $_.Trim() }
-    }
-
-    $config | Export-Clixml $configPath
-    Write-Host "✅ Config saved: $configPath"
+    Write-Log "ERROR: Config file missing. Run setup manually once."
+    exit
 }
 
 $config = Import-Clixml $configPath
+$fromEmail = $config.From
+$toEmail = ($config.To -join ";")
 
 # =========================
 # FEEDS
@@ -70,7 +70,7 @@ function Get-Summary ($Text) {
 }
 
 # =========================
-# START HTML (REAL HTML)
+# HTML START
 # =========================
 $html = @"
 <html>
@@ -87,7 +87,7 @@ a:hover { text-decoration:underline; }
 </style>
 </head>
 <body>
-<h1>🔐 Daily Cybersecurity Digest — $Date</h1>
+<h1>Daily Cybersecurity Digest — $Date</h1>
 "@
 
 # =========================
@@ -119,7 +119,7 @@ foreach ($Feed in $Feeds) {
             if (-not $item.title) { continue }
             $title = ($item.title -replace '<[^>]+>', '')
 
-            # ✅ Robust link extraction
+            # Link handling
             if ($item.link.href) { $link = $item.link.href }
             elseif ($item.link.'#text') { $link = $item.link.'#text' }
             elseif ($item.link) { $link = $item.link }
@@ -129,14 +129,14 @@ foreach ($Feed in $Feeds) {
             elseif ($item.description) { $desc = $item.description }
             else { $desc = "" }
 
-            # ✅ Deduplicate
+            # Deduplicate
             $key = "$title|$link".ToLower()
             if ($Seen.ContainsKey($key)) { continue }
             $Seen[$key] = $true
 
             $summary = Get-Summary $desc
 
-            # ✅ ✅ FIXED CLICKABLE LINK (CORRECT HTML)
+            # ✅ FIXED CLICKABLE LINK (CORRECT HTML)
             $html += @"
 <div class='article'>
   <div class='title'><a href='$link' target='_blank'>$title</a></div>
@@ -146,61 +146,44 @@ foreach ($Feed in $Feeds) {
         }
     }
     catch {
-        Add-Content $LogFile "$(Get-Date) - Failed $Feed - $($_.Exception.Message)"
+        Write-Log "Feed failed: $Feed - $($_.Exception.Message)"
     }
 }
 
 $html += "</body></html>"
 
 # =========================
-# SAVE FILE (SAFE WRITE)
+# SAVE FILE
 # =========================
 [System.IO.File]::WriteAllText($OutputFile, $html)
-Unblock-File -Path $OutputFile -ErrorAction SilentlyContinue
-
-Write-Host "✅ Saved: $OutputFile"
-Start-Process $OutputFile
+Write-Log "Saved digest: $OutputFile"
 
 # =========================
-# SEND EMAIL (PROMPT FOR ADDRESSES)
+# SEND EMAIL
 # =========================
 try {
     $outlook = New-Object -ComObject Outlook.Application
-    $namespace = $outlook.GetNamespace("MAPI")
-
-    # ✅ Prompt user for email addresses
-    $fromEmail = Read-Host "Enter FROM email"
-    $toEmail   = Read-Host "Enter TO email(s)"
-
     $mail = $outlook.CreateItem(0)
 
-    # ✅ Set recipient
     $mail.To = $toEmail
+    $mail.Subject = "CyberSecurity Digest"
+    $mail.Body = "Attached is your daily digest."
+    $mail.Attachments.Add($OutputFile) | Out-Null
 
-    # ✅ Find matching Outlook account
-    $sendAccount = $outlook.Session.Accounts | Where-Object {
+    # Match account
+    $account = $outlook.Session.Accounts | Where-Object {
         $_.SmtpAddress -eq $fromEmail
     }
 
-    if ($sendAccount) {
-        $mail.SendUsingAccount = $sendAccount
-        Write-Host "✅ Using account: $fromEmail"
-    }
-    else {
-        Write-Host "⚠️ FROM address not found in Outlook. Using default account."
+    if ($account) {
+        $mail.SendUsingAccount = $account
     }
 
-    $mail.Subject = "CyberSecurity Digest"
-    $mail.Body = "Attached is your daily digest."
-
-    # ✅ Attach file
-    $mail.Attachments.Add($OutputFile) | Out-Null
-
-    # ✅ Send email
     $mail.Send()
-
-    Add-Content -Path $LogFile -Value "$(Get-Date) - Email sent from $fromEmail to $toEmail"
+    Write-Log "Email sent to $toEmail"
 }
 catch {
-    Add-Content -Path $LogFile -Value "$(Get-Date) - Email FAILED - $($_.Exception.Message)"
+    Write-Log "Email FAILED: $($_.Exception.Message)"
 }
+
+Write-Log "===== Script finished ====="

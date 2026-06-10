@@ -1,5 +1,0 @@
-$config = @{
-    From = "your@email.com"
-    To   = @("recipient@email.com")
-}
-$config | Export-Clixml "C:\TechNewsDaily\cyberDigestConfig.xml"

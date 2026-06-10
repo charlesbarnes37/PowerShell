@@ -1,0 +1,97 @@
+# =========================
+# Cyber Digest Setup Wizard
+# =========================
+
+$BasePath   = "C:\TechNewsDaily"
+$configPath = "$BasePath\cyberDigestConfig.xml"
+$LogFile    = "$BasePath\CyberDigest.log"
+
+# Ensure directory exists
+New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
+
+function Write-Log {
+    param ($msg)
+    Add-Content -Path $LogFile -Value "$(Get-Date) - SETUP: $msg"
+}
+
+Write-Host ""
+Write-Host "====================================" -ForegroundColor Cyan
+Write-Host "  Cyber Digest Setup Wizard" -ForegroundColor Cyan
+Write-Host "====================================" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Log "Setup started"
+
+# =========================
+# COLLECT INPUT
+# =========================
+$fromEmail = Read-Host "Enter FROM email (must exist in Outlook)"
+
+do {
+    $toInput = Read-Host "Enter TO emails (comma separated)"
+    $toList = $toInput -split "," | ForEach-Object { $_.Trim() }
+
+    if ($toList.Count -eq 0) {
+        Write-Host "Please enter at least one email." -ForegroundColor Yellow
+    }
+} while ($toList.Count -eq 0)
+
+# =========================
+# SAVE CONFIG
+# =========================
+$config = @{
+    From = $fromEmail
+    To   = $toList
+}
+
+$config | Export-Clixml $configPath
+
+Write-Host ""
+Write-Host "✅ Config saved successfully!" -ForegroundColor Green
+Write-Host "Location: $configPath"
+Write-Host ""
+
+Write-Log "Config saved"
+
+# =========================
+# TEST OUTLOOK (OPTIONAL)
+# =========================
+Write-Host "Testing Outlook connection..." -ForegroundColor Cyan
+
+try {
+    $outlook = New-Object -ComObject Outlook.Application
+    $accounts = $outlook.Session.Accounts
+
+    $match = $accounts | Where-Object { $_.SmtpAddress -eq $fromEmail }
+
+    if ($match) {
+        Write-Host "✅ Outlook account found: $fromEmail" -ForegroundColor Green
+        Write-Log "Outlook account verified"
+    }
+    else {
+        Write-Host "⚠️ FROM address not found in Outlook!" -ForegroundColor Yellow
+        Write-Host "Script will use default account." -ForegroundColor Yellow
+        Write-Log "Outlook account NOT matched"
+    }
+}
+catch {
+    Write-Host "⚠️ Outlook test failed. Outlook may not be installed or configured." -ForegroundColor Yellow
+    Write-Log "Outlook test failed"
+}
+
+# =========================
+# FINISHED
+# =========================
+Write-Host ""
+Write-Host "✅ Setup complete!" -ForegroundColor Green
+Write-Host ""
+Write-Host "Next steps:"
+Write-Host "1. Verify your main script exists:"
+Write-Host "   C:\TechNewsDaily\CyberDigest.ps1"
+Write-Host ""
+Write-Host "2. Create Task Scheduler job (daily 7:00 AM)"
+Write-Host ""
+Write-Host "3. Test by running task manually"
+Write-Host ""
+
+Write-Log "Setup completed"
