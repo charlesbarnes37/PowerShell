@@ -1,8 +1,20 @@
 # =========================
-# CONFIG SETUP (FIRST RUN)
+# BASE PATH (ALL FILES HERE)
 # =========================
-$configPath = "$env:USERPROFILE\cyberDigestConfig.xml"
+$BasePath = "C:\TechNewsDaily"
+$Date = Get-Date -Format "yyyy-MM-dd"
 
+# Ensure directory exists
+New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
+
+# Files
+$OutputFile = "$BasePath\CyberDigest_$Date.html"
+$configPath = "$BasePath\cyberDigestConfig.xml"
+$LogFile = "$BasePath\CyberDigest.log"
+
+# =========================
+# CONFIG (FIRST RUN ONLY)
+# =========================
 if (!(Test-Path $configPath)) {
     Write-Host "🔧 First-time setup..."
 
@@ -15,21 +27,10 @@ if (!(Test-Path $configPath)) {
     }
 
     $config | Export-Clixml $configPath
-    Write-Host "✅ Config saved."
+    Write-Host "✅ Config saved: $configPath"
 }
 
 $config = Import-Clixml $configPath
-
-# =========================
-# PATHS
-# =========================
-$BasePath = "C:\TechNewsDaily"
-
-New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
-
-$Date = Get-Date -Format "yyyy-MM-dd"
-$OutputFile = "$BasePath\CyberDigest_$Date.html"
-$LogFile = "$BasePath\CyberDigest.log"
 
 # =========================
 # FEEDS
@@ -47,9 +48,7 @@ $Feeds = @(
 # =========================
 # SUMMARY FUNCTION
 # =========================
-function Get-Summary {
-    param($Text)
-
+function Get-Summary ($Text) {
     if (-not $Text) { return "" }
 
     $clean = ($Text -replace '<[^>]+>', '') -replace '\s+', ' '
@@ -71,7 +70,7 @@ function Get-Summary {
 }
 
 # =========================
-# START HTML
+# START HTML (REAL HTML)
 # =========================
 $html = @"
 <html>
@@ -92,21 +91,18 @@ a:hover { text-decoration:underline; }
 "@
 
 # =========================
-# FETCH DATA
+# FETCH FEEDS
 # =========================
 $Seen = @{}
 
 foreach ($Feed in $Feeds) {
     try {
-        $response = Invoke-WebRequest -Uri $Feed -Headers @{
-            "User-Agent"="Mozilla/5.0"
-        } -UseBasicParsing
-
+        $response = Invoke-WebRequest -Uri $Feed -Headers @{ "User-Agent"="Mozilla/5.0" } -UseBasicParsing
         $raw = $response.Content.Trim()
 
         $html += "<h2>Source: $Feed</h2>"
 
-        if ($raw.StartsWith("<?xml") -or $raw.Contains("<rss")) {
+        if ($raw.Contains("<rss")) {
             $xml = [xml]$raw
             $items = $xml.rss.channel.item
         }
@@ -114,12 +110,8 @@ foreach ($Feed in $Feeds) {
             $xml = [xml]$raw
             $items = $xml.feed.entry
         }
-        elseif ($raw.StartsWith("{") -or $raw.StartsWith("[")) {
-            $json = $raw | ConvertFrom-Json
-            $items = $json.items
-        }
         else {
-            throw "Unknown feed format"
+            continue
         }
 
         foreach ($item in $items | Select-Object -First 10) {
@@ -127,37 +119,24 @@ foreach ($Feed in $Feeds) {
             if (-not $item.title) { continue }
             $title = ($item.title -replace '<[^>]+>', '')
 
-            # ✅ ROBUST LINK HANDLING
-            if ($item.link.href) {
-                $link = $item.link.href
-            }
-            elseif ($item.link.'#text') {
-                $link = $item.link.'#text'
-            }
-            elseif ($item.link) {
-                $link = $item.link
-            }
-            elseif ($item.url) {
-                $link = $item.url
-            }
-            else {
-                $link = $Feed
-            }
+            # ✅ Robust link extraction
+            if ($item.link.href) { $link = $item.link.href }
+            elseif ($item.link.'#text') { $link = $item.link.'#text' }
+            elseif ($item.link) { $link = $item.link }
+            else { $link = $Feed }
 
-            # ✅ CLEAN DESCRIPTION
             if ($item.summary) { $desc = $item.summary }
             elseif ($item.description) { $desc = $item.description }
-            elseif ($item.content) { $desc = $item.content }
             else { $desc = "" }
 
-            # ✅ DEDUPE
+            # ✅ Deduplicate
             $key = "$title|$link".ToLower()
             if ($Seen.ContainsKey($key)) { continue }
             $Seen[$key] = $true
 
             $summary = Get-Summary $desc
 
-            # ✅ ✅ ✅ FIXED CLICKABLE HTML
+            # ✅ ✅ FIXED CLICKABLE LINK (CORRECT HTML)
             $html += @"
 <div class='article'>
   <div class='title'><a href='$link' target='_blank'>$title</a></div>
@@ -174,26 +153,24 @@ foreach ($Feed in $Feeds) {
 $html += "</body></html>"
 
 # =========================
-# SAVE FILE (SAFE)
+# SAVE FILE (SAFE WRITE)
 # =========================
 [System.IO.File]::WriteAllText($OutputFile, $html)
 Unblock-File -Path $OutputFile -ErrorAction SilentlyContinue
 
-Add-Content $LogFile "$(Get-Date) - Created $OutputFile"
 Write-Host "✅ Saved: $OutputFile"
-
 Start-Process $OutputFile
 
 # =========================
-# SEND EMAIL (OUTLOOK)
+# SEND EMAIL (PROMPT FOR ADDRESSES)
 # =========================
 try {
     $outlook = New-Object -ComObject Outlook.Application
     $namespace = $outlook.GetNamespace("MAPI")
 
     # ✅ Prompt user for email addresses
-    $fromEmail = Read-Host "Enter FROM email (must exist in Outlook)"
-    $toEmail   = Read-Host "Enter TO email"
+    $fromEmail = Read-Host "Enter FROM email"
+    $toEmail   = Read-Host "Enter TO email(s)"
 
     $mail = $outlook.CreateItem(0)
 
