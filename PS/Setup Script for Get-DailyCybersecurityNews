@@ -3,95 +3,145 @@
 # =========================
 
 $BasePath   = "C:\TechNewsDaily"
-$configPath = "$BasePath\cyberDigestConfig.xml"
+$configPath = "$BasePath\CyberDigestConfig.xml"
 $LogFile    = "$BasePath\CyberDigest.log"
 
-# Ensure directory exists
-New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
+# =========================
+# FUNCTIONS
+# =========================
 
 function Write-Log {
     param ($msg)
-    Add-Content -Path $LogFile -Value "$(Get-Date) - SETUP: $msg"
+    $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $LogFile -Value "$time - SETUP: $msg"
 }
 
-Write-Host ""
-Write-Host "====================================" -ForegroundColor Cyan
-Write-Host "  Cyber Digest Setup Wizard" -ForegroundColor Cyan
-Write-Host "====================================" -ForegroundColor Cyan
-Write-Host ""
+function Test-Email {
+    param ($email)
+    return $email -match "^[^@\s]+@[^@\s]+\.[^@\s]+$"
+}
 
+# =========================
+# INITIAL SETUP
+# =========================
+
+try {
+    if (-not (Test-Path $BasePath)) {
+        New-Item -ItemType Directory -Path $BasePath -Force -ErrorAction Stop | Out-Null
+    }
+}
+catch {
+    Write-Host "❌ Cannot create directory. Run as Administrator." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "`n=== Cyber Digest Setup ===`n" -ForegroundColor Cyan
 Write-Log "Setup started"
 
-# =========================
-# COLLECT INPUT
-# =========================
-$fromEmail = Read-Host "Enter FROM email (must exist in Outlook)"
+if (Test-Path $configPath) {
+    Write-Host "⚠️ Existing config will be overwritten." -ForegroundColor Yellow
+    Write-Log "Existing config detected"
+}
 
+# =========================
+# INPUT: FROM EMAIL
+# =========================
+do {
+    $fromEmail = Read-Host "Enter FROM email"
+
+    if (-not (Test-Email $fromEmail)) {
+        Write-Host "Invalid email format." -ForegroundColor Yellow
+    }
+
+} until (Test-Email $fromEmail)
+
+# =========================
+# INPUT: TO EMAILS
+# =========================
 do {
     $toInput = Read-Host "Enter TO emails (comma separated)"
-    $toList = $toInput -split "," | ForEach-Object { $_.Trim() }
 
-    if ($toList.Count -eq 0) {
-        Write-Host "Please enter at least one email." -ForegroundColor Yellow
+    $toList = $toInput -split "," |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { Test-Email $_ }
+
+    if (-not $toList -or $toList.Count -eq 0) {
+        Write-Host "Enter at least one valid email." -ForegroundColor Yellow
     }
-} while ($toList.Count -eq 0)
+
+} while (-not $toList -or $toList.Count -eq 0)
+
+# =========================
+# CONFIG PREVIEW
+# =========================
+Write-Host "`nReview configuration:" -ForegroundColor Cyan
+Write-Host "From: $fromEmail"
+Write-Host "To:   $($toList -join ', ')"
+
+if ((Read-Host "Continue? (Y/N)") -notin @("Y","y")) {
+    Write-Host "Setup cancelled." -ForegroundColor Yellow
+    Write-Log "User cancelled setup"
+    exit
+}
 
 # =========================
 # SAVE CONFIG
 # =========================
-$config = @{
-    From = $fromEmail
-    To   = $toList
+try {
+    @{
+        From = $fromEmail
+        To   = $toList
+    } | Export-Clixml $configPath -ErrorAction Stop
+
+    Write-Host "`n✅ Config saved!" -ForegroundColor Green
+    Write-Log "Config saved successfully"
+}
+catch {
+    Write-Host "❌ Failed to save config." -ForegroundColor Red
+    Write-Log "Config save failed: $_"
+    exit 1
 }
 
-$config | Export-Clixml $configPath
-
-Write-Host ""
-Write-Host "✅ Config saved successfully!" -ForegroundColor Green
-Write-Host "Location: $configPath"
-Write-Host ""
-
-Write-Log "Config saved"
-
 # =========================
-# TEST OUTLOOK (OPTIONAL)
+# OUTLOOK CHECK
 # =========================
-Write-Host "Testing Outlook connection..." -ForegroundColor Cyan
+Write-Host "Checking Outlook..." -ForegroundColor Cyan
+
+$outlook = $null
 
 try {
     $outlook = New-Object -ComObject Outlook.Application
-    $accounts = $outlook.Session.Accounts
-
-    $match = $accounts | Where-Object { $_.SmtpAddress -eq $fromEmail }
+    $match = $outlook.Session.Accounts |
+        Where-Object { $_.SmtpAddress -eq $fromEmail }
 
     if ($match) {
-        Write-Host "✅ Outlook account found: $fromEmail" -ForegroundColor Green
+        Write-Host "✅ Outlook account verified" -ForegroundColor Green
         Write-Log "Outlook account verified"
-    }
-    else {
-        Write-Host "⚠️ FROM address not found in Outlook!" -ForegroundColor Yellow
-        Write-Host "Script will use default account." -ForegroundColor Yellow
-        Write-Log "Outlook account NOT matched"
+    } else {
+        Write-Host "⚠️ Email not found in Outlook (will use default)" -ForegroundColor Yellow
+        Write-Log "Outlook account not matched"
     }
 }
 catch {
-    Write-Host "⚠️ Outlook test failed. Outlook may not be installed or configured." -ForegroundColor Yellow
-    Write-Log "Outlook test failed"
+    Write-Host "⚠️ Outlook not available" -ForegroundColor Yellow
+    Write-Log "Outlook check failed: $_"
+}
+finally {
+    if ($outlook) {
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($outlook) | Out-Null
+    }
 }
 
 # =========================
-# FINISHED
+# COMPLETE
 # =========================
-Write-Host ""
-Write-Host "✅ Setup complete!" -ForegroundColor Green
+Write-Host "`n✅ Setup complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "1. Verify your main script exists:"
+Write-Host "1. Confirm script exists at:"
 Write-Host "   C:\TechNewsDaily\CyberDigest.ps1"
-Write-Host ""
-Write-Host "2. Create Task Scheduler job (daily 7:00 AM)"
-Write-Host ""
-Write-Host "3. Test by running task manually"
+Write-Host "2. Create scheduled task (7:00 AM)"
+Write-Host "3. Test run"
 Write-Host ""
 
 Write-Log "Setup completed"

@@ -1,11 +1,14 @@
 # =========================
-# BASE PATH
+# BASE SETTINGS
 # =========================
-$BasePath = "C:\TechNewsDaily"
-$Date = Get-Date -Format "yyyy-MM-dd"
-$OutputFile = "$BasePath\CyberDigest_$Date.html"
-$configPath = "$BasePath\cyberDigestConfig.xml"
-$LogFile = "$BasePath\CyberDigest.log"
+$BasePath   = "C:\TechNewsDaily"
+$Date       = Get-Date -Format "yyyy-MM-dd"
+$HtmlFile   = "$BasePath\CyberDigest_$Date.html"
+$PdfFile    = "$BasePath\CyberDigest_$Date.pdf"
+$configPath = "$BasePath\CyberDigestConfig.xml"
+$LogFile    = "$BasePath\CyberDigest.log"
+
+$ProgressPreference = 'SilentlyContinue'
 
 New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
 
@@ -14,7 +17,8 @@ New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
 # =========================
 function Write-Log {
     param ($msg)
-    Add-Content -Path $LogFile -Value "$(Get-Date) - $msg"
+    $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $LogFile -Value "$time - $msg"
 }
 
 Write-Log "===== Script started ====="
@@ -23,46 +27,27 @@ Write-Log "===== Script started ====="
 # LOAD CONFIG
 # =========================
 if (!(Test-Path $configPath)) {
-    Write-Log "ERROR: Config file missing."
+    Write-Log "ERROR: Config missing"
     exit
 }
 
 $config = Import-Clixml $configPath
+
+if (-not $config.From -or -not $config.To) {
+    Write-Log "ERROR: Invalid config"
+    exit
+}
+
 $fromEmail = $config.From
-$toEmail = ($config.To -join ";")
+$toEmail   = ($config.To -join ";")
 
 # =========================
-# FEEDS (Expanded + Pro)
+# RSS FEEDS
 # =========================
 $Feeds = @(
-
-    # --- Core News ---
     "https://krebsonsecurity.com/feed/",
-    "https://www.darkreading.com/rss.xml",
-    "https://www.cyberscoop.com/feed/",
     "https://www.bleepingcomputer.com/feed/",
-    "https://www.securityweek.com/feed",
-    "https://thehackernews.com/rss.xml",
-    "https://www.zdnet.com/topic/security/rss.xml",
-
-    # --- Tech Context ---
-    "https://arstechnica.com/security/feed/",
-    "https://www.wired.com/feed/category/security/rss",
-
-    # --- Threat / Research ---
-    "https://threatpost.com/feed/",
-    "https://isc.sans.edu/rssfeed.xml",
-    "https://thedfirreport.com/feed/",
-    "https://blog.talosintelligence.com/feeds/posts/default",
-    "https://www.rapid7.com/blog/rss/",
-    "https://unit42.paloaltonetworks.com/feed/",
-    "https://www.microsoft.com/en-us/security/blog/feed/",
-    "https://otx.alienvault.com/rss/otx_rss.xml",
-    "https://www.welivesecurity.com/feed/",
-    "https://www.trendmicro.com/en_us/research/rss.html",
-    "https://asec.ahnlab.com/en/feed/",
-    "https://blogs.blackberry.com/en/feed",
-    "https://www.avertium.com/blog/rss.xml"
+    "https://thehackernews.com/rss.xml"
 )
 
 # =========================
@@ -72,120 +57,87 @@ function Get-Summary ($Text) {
     if (-not $Text) { return "" }
 
     $clean = ($Text -replace '<[^>]+>', '') -replace '\s+', ' '
-    $clean = $clean.Trim()
+    $sentences = $clean -split '(?<=[\.\!\?])\s+'
 
-    $sentences = $clean -split '(?<=[\.!\?])\s+'
-
-    if ($sentences.Count -gt 2) {
-        $summary = ($sentences[0..1] -join ' ')
+    $summary = if ($sentences.Count -gt 2) {
+        $sentences[0..1] -join ' '
     } else {
-        $summary = $clean
+        $clean
     }
 
     if ($summary.Length -gt 400) {
         $summary = $summary.Substring(0,400) + "..."
     }
 
-    return $summary
+    return $summary.Trim()
 }
 
+Add-Type -AssemblyName System.Web
+
 # =========================
-# HTML START
+# BUILD HTML
 # =========================
-$html = @"
-<html>
-<head>
-<style>
+$html = "<html><head><style>
 body { font-family: Arial; margin:20px; line-height:1.6; }
 h1 { color:#2b5797; }
-h2 { margin-top:25px; }
-.article { margin-bottom:20px; border-bottom:1px solid #ccc; padding-bottom:10px; }
-.title { font-weight:bold; font-size:16px; }
+h2 { margin-top:25px; border-bottom:1px solid #ccc; }
+.article { margin-bottom:15px; }
+.title { font-weight:bold; }
+.summary { color:#555; font-size:13px; }
 a { color:#1a0dab; text-decoration:none; }
-a:hover { text-decoration:underline; }
-.summary { color:#555; font-style:italic; }
-</style>
-</head>
-<body>
-<h1>Daily Cybersecurity Digest — $Date</h1>
-"@
+</style></head><body>"
+
+$html += "<h1>Cybersecurity Digest - $Date</h1>"
+
+$Seen = @{}
 
 # =========================
 # FETCH FEEDS
 # =========================
-$Seen = @{}
-
 foreach ($Feed in $Feeds) {
+
     try {
-        $response = Invoke-WebRequest -Uri $Feed -Headers @{ "User-Agent"="Mozilla/5.0" } -UseBasicParsing
-        $raw = $response.Content.Trim()
+        $response = Invoke-WebRequest `
+            -Uri $Feed `
+            -UseBasicParsing `
+            -TimeoutSec 20 `
+            -ErrorAction Stop
 
-        # Clean source name
-        $SourceName = ($Feed -replace "https?://","" -split "/")[0]
-        $html += "<h2>$SourceName</h2>"
-
-        $items = @()
-
-        # ===== RSS =====
-        if ($raw.Contains("<rss")) {
-            $xml = [xml]$raw
-            $items = $xml.rss.channel.item
+        try {
+            $xml = [xml]$response.Content
         }
-        # ===== Atom =====
-        elseif ($raw.Contains("<feed")) {
-            $xml = [xml]$raw
-            $items = $xml.feed.entry
-        }
-        # ===== JSON FEED =====
-        elseif ($raw.Trim().StartsWith("{")) {
-            try {
-                $json = $raw | ConvertFrom-Json
-                $items = $json.items
-            }
-            catch {
-                Write-Log "JSON parse failed: $Feed"
-                continue
-            }
-        }
-        else {
-            Write-Log "Unknown format skipped: $Feed"
+        catch {
+            Write-Log "XML parse failed: $Feed"
             continue
         }
 
+        $SourceName = ($Feed -replace "https?://","" -split "/")[0]
+        $html += "<h2>$SourceName</h2>"
+
+        $items = $xml.rss.channel.item
+
         foreach ($item in $items | Select-Object -First 10) {
 
-            $title = ""
-            $link = ""
-            $desc = ""
-
-            # ---- Normalize fields ----
-            if ($item.title) { $title = $item.title }
-
-            if ($item.url) { $link = $item.url }
-            elseif ($item.link.href) { $link = $item.link.href }
-            elseif ($item.link.'#text') { $link = $item.link.'#text' }
-            elseif ($item.link) { $link = $item.link }
-
-            if ($item.summary) { $desc = $item.summary }
-            elseif ($item.description) { $desc = $item.description }
-            elseif ($item.content_text) { $desc = $item.content_text }
-            elseif ($item.content_html) { $desc = $item.content_html }
+            $title = $item.title
+            $link  = $item.link
+            $desc  = $item.description
 
             if (-not $title) { continue }
 
-            # Deduplicate
             $key = "$title|$link".ToLower()
             if ($Seen.ContainsKey($key)) { continue }
             $Seen[$key] = $true
 
             $summary = Get-Summary $desc
 
-            $html += @"
-<div class='article'>
-  <div class='title'><a href='$link' target='_blank'>$title</a></div>
-  <div class='summary'>$summary</div>
-</div>
-"@
+            # Encode HTML safely
+            $encodedTitle   = [System.Web.HttpUtility]::HtmlEncode($title)
+            $encodedSummary = [System.Web.HttpUtility]::HtmlEncode($summary)
+
+            $html += "<div class='article'>
+                        <div class='title'><a href='$link'>$encodedTitle</a></div>
+                        <div class='summary'>$encodedSummary</div>
+                      </div>"
         }
     }
     catch {
@@ -196,26 +148,57 @@ foreach ($Feed in $Feeds) {
 $html += "</body></html>"
 
 # =========================
-# SAVE FILE
+# SAVE HTML
 # =========================
-[System.IO.File]::WriteAllText($OutputFile, $html)
-Write-Log "Saved digest: $OutputFile"
+[System.IO.File]::WriteAllText($HtmlFile, $html)
+Write-Log "HTML created"
+
+# =========================
+# CONVERT HTML → PDF (WORD)
+# =========================
+$word = $null
+
+try {
+    $word = New-Object -ComObject Word.Application
+    $word.Visible = $false
+
+    $doc = $word.Documents.Open($HtmlFile)
+
+    $wdFormatPDF = 17
+    $doc.SaveAs([ref]$PdfFile, [ref]$wdFormatPDF)
+    $doc.Close()
+
+    Write-Log "PDF created"
+}
+catch {
+    Write-Log "PDF conversion failed: $($_.Exception.Message)"
+}
+finally {
+    if ($word) {
+        $word.Quit()
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+    }
+}
 
 # =========================
 # SEND EMAIL
 # =========================
+$outlook = $null
+
 try {
     $outlook = New-Object -ComObject Outlook.Application
     $mail = $outlook.CreateItem(0)
 
     $mail.To = $toEmail
-    $mail.Subject = "CyberSecurity Digest"
-    $mail.Body = "Attached is your daily digest."
-    $mail.Attachments.Add($OutputFile) | Out-Null
+    $mail.Subject = "CyberSecurity Digest - $Date"
+    $mail.Body = "Attached is your daily cybersecurity digest (PDF)."
 
-    $account = $outlook.Session.Accounts | Where-Object {
-        $_.SmtpAddress -eq $fromEmail
+    if (Test-Path $PdfFile) {
+        $mail.Attachments.Add($PdfFile) | Out-Null
     }
+
+    $account = $outlook.Session.Accounts |
+        Where-Object { $_.SmtpAddress -eq $fromEmail }
 
     if ($account) {
         $mail.SendUsingAccount = $account
@@ -225,7 +208,12 @@ try {
     Write-Log "Email sent"
 }
 catch {
-    Write-Log "Email FAILED: $($_.Exception.Message)"
+    Write-Log "Email failed: $($_.Exception.Message)"
+}
+finally {
+    if ($outlook) {
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($outlook) | Out-Null
+    }
 }
 
 Write-Log "===== Script finished ====="
